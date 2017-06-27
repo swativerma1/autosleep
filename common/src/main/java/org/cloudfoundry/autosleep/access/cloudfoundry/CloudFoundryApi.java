@@ -370,47 +370,66 @@ public class CloudFoundryApi implements CloudFoundryApiService {
     @Override
     public List<ApplicationIdentity> listAliveApplications(String spaceUuid, Pattern excludeNames) throws
             CloudFoundryException {
-        log.debug("listAliveApplications from space_guid:" + spaceUuid);
+        log.debug("listAliveApplications for space {}", spaceUuid);        
         try {
-            return Mono.just(spaceUuid)
-                    .then(spaceId -> this.cfClient
-                            .applicationsV2()
-                            .list(ListApplicationsRequest.builder()
-                                    .spaceId(spaceUuid)
-                                    .build()))
-                    .flatMap(listApplicationsResponse -> Flux.fromIterable(listApplicationsResponse.getResources()))
-                    //remove all filtered applications
-                    .filter(applicationResource -> excludeNames == null
-                            || !excludeNames.matcher(applicationResource.getEntity().getName()).matches())
-                    //get instances
-                    .flatMap(applicationResource -> Mono.when(Mono.just(applicationResource),
+            List<ApplicationIdentity> aliveAppList = new ArrayList<>();
+            ListApplicationsResponse res = null;
+            int pageNo = 1;
+            do {
+                res = this.cfClient
+                        .applicationsV2()
+                        .list(ListApplicationsRequest.builder()
+                                .spaceId(spaceUuid)
+                                .page(pageNo)
+                                .build())
+                        .block();
+                List<ApplicationIdentity> appList = Flux.fromIterable(res.getResources())
+                        .filter(applicationResource -> excludeNames == null
+                        || !excludeNames.matcher(applicationResource.getEntity().getName()).matches())
+                        //get instances
+                        .flatMap(applicationResource -> Mono.when(Mono.just(applicationResource),
                             getApplicationInstances(applicationResource.getMetadata().getId())))
-                    //filter the one that has no instances (ie. STOPPED)
-                    .filter(tuple -> !tuple.getT2().getInstances().isEmpty())
-                    .map(tuple -> ApplicationIdentity.builder()
+                        //filter the one that has no instances (ie. STOPPED)
+                        .filter(tuple -> !(tuple.getT2().getInstances().size() == 0))
+                        .map(tuple -> ApplicationIdentity.builder()
                             .guid(tuple.getT1().getMetadata().getId())
                             .name(tuple.getT1().getEntity().getName())
                             .build())
-                    .collect(ArrayList<ApplicationIdentity>::new, ArrayList::add)
-                    .block(Config.CF_API_TIMEOUT);
+                        .collect(ArrayList<ApplicationIdentity>::new, ArrayList::add)
+                        .block(Config.CF_API_TIMEOUT);
+                aliveAppList.addAll(appList);
+                pageNo++;
+            } while (res.getNextUrl() != null);
+            return aliveAppList;    
         } catch (RuntimeException r) {
             throw new CloudFoundryException("failed listing applications from space_id: " + spaceUuid, r);
-        }
+        }        
     }
 
     @Override
     public List<String> listApplicationRoutes(String applicationUuid) throws CloudFoundryException {
-        log.debug("listApplicationRoutes");
+        log.debug("listApplicationRoutes for application {}", applicationUuid);
         try {
-            ListApplicationRoutesResponse response = cfClient.applicationsV2()
-                    .listRoutes(
-                            ListApplicationRoutesRequest.builder()
-                                    .applicationId(applicationUuid)
-                                    .build())
-                    .block(Config.CF_API_TIMEOUT);
-            return response.getResources().stream()
-                    .map(routeResource -> routeResource.getMetadata().getId())
-                    .collect(Collectors.toList());
+            int pageNo = 1;
+            ListApplicationRoutesResponse response = null;
+            List<String> appRouteIds = new ArrayList<>();
+            
+            do {
+                response = cfClient.applicationsV2()
+                        .listRoutes(
+                                ListApplicationRoutesRequest.builder()
+                                        .applicationId(applicationUuid)
+                                        .page(pageNo)
+                                        .build())
+                        .block(Config.CF_API_TIMEOUT);
+                List<String> routeIds = response.getResources().stream()
+                        .map(routeResource -> routeResource.getMetadata().getId())
+                        .collect(Collectors.toList());
+                appRouteIds.addAll(routeIds);
+                pageNo++;
+            } while (response.getNextUrl() != null);
+            
+            return appRouteIds;
         } catch (RuntimeException r) {
             throw new CloudFoundryException(r);
         }
@@ -418,17 +437,28 @@ public class CloudFoundryApi implements CloudFoundryApiService {
 
     @Override
     public List<String> listRouteApplications(String routeUuid) throws CloudFoundryException {
-        log.debug("listRouteApplications");
+        log.debug("listRouteApplications for routeUuid {}", routeUuid);
         try {
-            ListRouteApplicationsResponse response = cfClient.routes()
-                    .listApplications(
-                            ListRouteApplicationsRequest.builder()
-                                    .routeId(routeUuid)
-                                    .build())
-                    .block(Config.CF_API_TIMEOUT);
-            return response.getResources().stream()
-                    .map(appResource -> appResource.getMetadata().getId())
-                    .collect(Collectors.toList());
+            int pageNo = 1;
+            ListRouteApplicationsResponse response = null;
+            List<String> routeAppIds = new ArrayList<>();
+            
+            do {
+                response = cfClient.routes()
+                        .listApplications(
+                                ListRouteApplicationsRequest.builder()
+                                        .routeId(routeUuid)
+                                        .page(pageNo)
+                                        .build())
+                        .block(Config.CF_API_TIMEOUT);
+                List<String> appIds = response.getResources().stream()
+                        .map(appResource -> appResource.getMetadata().getId())
+                        .collect(Collectors.toList());
+                routeAppIds.addAll(appIds);
+                pageNo++;
+            } while (response.getNextUrl() != null);
+             
+            return routeAppIds;
         } catch (RuntimeException r) {
             throw new CloudFoundryException(r);
         }
